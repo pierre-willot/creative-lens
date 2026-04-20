@@ -1,5 +1,5 @@
-from PyQt6.QtWidgets import QMainWindow, QVBoxLayout, QWidget, QLabel, QPushButton, QFileDialog
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtWidgets import QMainWindow, QVBoxLayout, QWidget, QLabel, QPushButton, QFileDialog, QApplication
+from PyQt6.QtCore import Qt, pyqtSignal, QEvent, QRect
 from PyQt6.QtGui import QImage, QPixmap
 import numpy as np
 
@@ -68,6 +68,19 @@ class CreativeLensApp(QMainWindow):
         self.main_layout.setStretch(0, 0) # Title Bar stays small
         self.main_layout.setStretch(1, 1) # Content fills the rest
 
+        self._setup_global_event_filter()
+
+    def _setup_global_event_filter(self):
+        # Enable mouse tracking on all child widgets so we receive hover events
+        self.setMouseTracking(True)
+        for child in self.findChildren(QWidget):
+            child.setMouseTracking(True)
+            
+        # Install the event filter on the application to catch all mouse events before children consume them
+        app = QApplication.instance()
+        if app:
+            app.installEventFilter(self)
+
     def get_edge(self, pos):
         rect = self.rect()
         edge = Qt.Edge(0)
@@ -78,38 +91,48 @@ class CreativeLensApp(QMainWindow):
         if pos.y() >= rect.height() - bw: edge |= Qt.Edge.BottomEdge
         return edge
 
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            edge = self.get_edge(event.pos())
-            if edge != Qt.Edge(0):
-                self.windowHandle().startSystemResize(edge)
-            else:
-                # Only allow dragging from the TitleBar area
-                if self.title_bar.underMouse():
+    def eventFilter(self, obj, event):
+        if isinstance(obj, QWidget) and obj.window() is self:
+            if event.type() == QEvent.Type.MouseMove:
+                pos = self.mapFromGlobal(event.globalPosition().toPoint())
+                edge = self.get_edge(pos)
+                
+                if edge == (Qt.Edge.LeftEdge | Qt.Edge.TopEdge) or edge == (Qt.Edge.RightEdge | Qt.Edge.BottomEdge):
+                    self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+                elif edge == (Qt.Edge.RightEdge | Qt.Edge.TopEdge) or edge == (Qt.Edge.LeftEdge | Qt.Edge.BottomEdge):
+                    self.setCursor(Qt.CursorShape.SizeBDiagCursor)
+                elif edge & (Qt.Edge.LeftEdge | Qt.Edge.RightEdge):
+                    self.setCursor(Qt.CursorShape.SizeHorCursor)
+                elif edge & (Qt.Edge.TopEdge | Qt.Edge.BottomEdge):
+                    self.setCursor(Qt.CursorShape.SizeVerCursor)
+                else:
+                    self.unsetCursor()
+                    
+                # Dragging Logic
+                if self.drag_start_pos is not None and not self.isMaximized():
+                    delta = event.globalPosition().toPoint() - self.drag_start_pos
+                    self.move(self.x() + delta.x(), self.y() + delta.y())
                     self.drag_start_pos = event.globalPosition().toPoint()
+                    return True # Consume drag event
+                    
+            elif event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+                pos = self.mapFromGlobal(event.globalPosition().toPoint())
+                edge = self.get_edge(pos)
+                if edge != Qt.Edge(0):
+                    self.windowHandle().startSystemResize(edge)
+                    return True # Consume resize event
+                else:
+                    # Check if click is on TitleBar for dragging
+                    tb_rect = self.title_bar.rect()
+                    tb_global_top_left = self.title_bar.mapToGlobal(tb_rect.topLeft())
+                    tb_global_rect = QRect(tb_global_top_left, tb_rect.size())
+                    if tb_global_rect.contains(event.globalPosition().toPoint()):
+                        self.drag_start_pos = event.globalPosition().toPoint()
 
-    def mouseMoveEvent(self, event):
-        # Cursor Update Logic
-        edge = self.get_edge(event.pos())
-        if edge == (Qt.Edge.LeftEdge | Qt.Edge.TopEdge) or edge == (Qt.Edge.RightEdge | Qt.Edge.BottomEdge):
-            self.setCursor(Qt.CursorShape.SizeFDiagCursor)
-        elif edge == (Qt.Edge.RightEdge | Qt.Edge.TopEdge) or edge == (Qt.Edge.LeftEdge | Qt.Edge.BottomEdge):
-            self.setCursor(Qt.CursorShape.SizeBDiagCursor)
-        elif edge & (Qt.Edge.LeftEdge | Qt.Edge.RightEdge):
-            self.setCursor(Qt.CursorShape.SizeHorCursor)
-        elif edge & (Qt.Edge.TopEdge | Qt.Edge.BottomEdge):
-            self.setCursor(Qt.CursorShape.SizeVerCursor)
-        else:
-            self.setCursor(Qt.CursorShape.ArrowCursor)
+            elif event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+                self.drag_start_pos = None
 
-        # Dragging Logic
-        if self.drag_start_pos is not None and not self.isMaximized():
-            delta = event.globalPosition().toPoint() - self.drag_start_pos
-            self.move(self.x() + delta.x(), self.y() + delta.y())
-            self.drag_start_pos = event.globalPosition().toPoint()
-
-    def mouseReleaseEvent(self, event):
-        self.drag_start_pos = None
+        return super().eventFilter(obj, event)
 
     def toggle_maximize(self):
         if self.isMaximized():
